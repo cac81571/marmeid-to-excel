@@ -9,6 +9,18 @@ Option Explicit
 Private Const SETTING_SHEET As String = "設定"
 Private Const NOTATION_SHEET As String = "記法"
 
+' 図形位置はポイント。ここを変えると全体の配置が変わる。
+' 左から右 (LR)。段は Left 方向、同じ段の並びは Top 方向。
+Private Const LR_ORIGIN_LEFT As Single = 250   ' 最初の段の Left
+Private Const LR_RANK_GAP As Single = 50        ' 段と段のすき間
+Private Const LR_SIBLING_GAP As Single = 30     ' 同じ段の図形のすき間
+Private Const LR_MIN_TOP As Single = 20         ' Top の下限
+' 上から下 (TD)。段は Top 方向、同じ段の並びは Left 方向。
+Private Const TD_ORIGIN_TOP As Single = 20      ' 最初の段の Top
+Private Const TD_RANK_GAP As Single = 40        ' 段と段のすき間
+Private Const TD_SIBLING_GAP As Single = 30     ' 同じ段の図形のすき間
+Private Const TD_MIN_LEFT As Single = 250       ' Left の下限
+
 Private ShapeRules As Collection   ' 開始 & vbLf & 終了 & vbLf & オブジェクト名。開始が長い順
 Private LineOpList As Collection   ' 矢印の記法。シートの順
 Private LineMap As Object          ' 矢印の記法 -> オブジェクト名
@@ -179,9 +191,9 @@ Private Sub PlaceNodes(shp As Object, level As Object, edges As Collection, ByVa
 
     Dim mainAt As Single, mainGap As Single, crossGap As Single, minCross As Single
     If flow = "LR" Then
-        mainAt = 250: mainGap = 50: crossGap = 30: minCross = 20
+        mainAt = LR_ORIGIN_LEFT: mainGap = LR_RANK_GAP: crossGap = LR_SIBLING_GAP: minCross = LR_MIN_TOP
     Else
-        mainAt = 20: mainGap = 40: crossGap = 30: minCross = 250
+        mainAt = TD_ORIGIN_TOP: mainGap = TD_RANK_GAP: crossGap = TD_SIBLING_GAP: minCross = TD_MIN_LEFT
     End If
 
     Dim ids As Collection, sh As Shape
