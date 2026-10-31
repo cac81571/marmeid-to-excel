@@ -27,10 +27,10 @@ Sub MermaidToShapes()
     Dim r As Long, s As String, flow As String, d As String
 
     ' 1. 読み込み（A列）。記法が不正なセルはピンクにして、その行は図形にしない
-    Dim re As Object, m As Object, pos As Long, prevId As String, curId As String, kind As String
+    Dim re As Object, m As Object, pos As Long, prevId As String, curId As String, kind As String, label As String
     Set re = CreateObject("VBScript.RegExp")
     re.Global = True
-    re.Pattern = "-\.->|==>|-->|---"
+    re.Pattern = ArrowPattern()
     For r = 1 To ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
         s = NormalizeLine(Trim(CStr(ws.Cells(r, 1).Value & "")))
         If s <> "" And Not LineOK(s, re) Then
@@ -41,19 +41,20 @@ Sub MermaidToShapes()
                 d = DirectionOf(s)
                 If d = "TD" Or d = "LR" Then flow = d
             End If
-            re.Pattern = "-\.->|==>|-->|---"
+            re.Pattern = ArrowPattern()
             If s <> "" And re.Test(s) Then
-                re.Pattern = "-\.->|==>|-->|---"
-                pos = 1: prevId = "": kind = ""
+                re.Pattern = ArrowPattern()
+                pos = 1: prevId = "": kind = "": label = ""
                 For Each m In re.Execute(s)
                     curId = ParseNode(Trim(Mid(s, pos, m.FirstIndex + 1 - pos)), nodes, kinds)
-                    If prevId <> "" Then edges.Add prevId & vbLf & curId & vbLf & kind
+                    If prevId <> "" Then edges.Add prevId & vbLf & curId & vbLf & kind & vbLf & label
                     prevId = curId
-                    kind = LineKind(m.Value)
+                    kind = LineKind(ArrowOp(m.Value))
+                    label = ArrowLabel(m.Value)
                     pos = m.FirstIndex + m.Length + 1
                 Next
                 curId = ParseNode(Trim(Mid(s, pos)), nodes, kinds)
-                If prevId <> "" And curId <> "" Then edges.Add prevId & vbLf & curId & vbLf & kind
+                If prevId <> "" And curId <> "" Then edges.Add prevId & vbLf & curId & vbLf & kind & vbLf & label
             End If
         End If
     Next
@@ -117,6 +118,7 @@ Sub MermaidToShapes()
             c.ConnectorFormat.BeginConnect shp(EdgePart(e, 0)), SideSite(shp(EdgePart(e, 0)), "bottom")
             c.ConnectorFormat.EndConnect shp(EdgePart(e, 1)), SideSite(shp(EdgePart(e, 1)), "top")
         End If
+        AddLineLabel ws, c, EdgePart(e, 3)
     Next
     Application.ScreenUpdating = True
     Exit Sub
@@ -329,6 +331,50 @@ Private Sub SiteXY(sh As Shape, ByVal site As Long, ByRef x As Single, ByRef y A
     Next
 End Sub
 
+' 「-->」「---|Yes|」のように、矢印と任意の条件文字
+Private Function ArrowPattern() As String
+    ArrowPattern = "(-\.->|==>|-->|---)\s*(\|[^|]*\|)?"
+End Function
+
+Private Function ArrowOp(ByVal token As String) As String
+    Dim p As Long
+    p = InStr(token, "|")
+    If p = 0 Then ArrowOp = Trim(token) Else ArrowOp = Trim(Left(token, p - 1))
+End Function
+
+Private Function ArrowLabel(ByVal token As String) As String
+    Dim p As Long, q As Long
+    p = InStr(token, "|")
+    If p = 0 Then Exit Function
+    q = InStr(p + 1, token, "|")
+    If q = 0 Then Exit Function
+    ArrowLabel = Trim(Mid(token, p + 1, q - p - 1))
+End Function
+
+' 条件文字を線の中央に置く。コネクタ自体には文字を載せられない
+Private Sub AddLineLabel(ws As Worksheet, c As Shape, ByVal label As String)
+    Dim tb As Shape
+    If label = "" Then Exit Sub
+    Set tb = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, c.Left, c.Top, 10, 10)
+    tb.Line.Visible = msoFalse
+    tb.Fill.Visible = msoTrue
+    tb.Fill.ForeColor.RGB = RGB(255, 255, 255)
+    With tb.TextFrame2
+        .WordWrap = msoFalse
+        .AutoSize = msoAutoSizeShapeToFitText
+        .MarginLeft = 2
+        .MarginRight = 2
+        .MarginTop = 0
+        .MarginBottom = 0
+        .VerticalAnchor = msoAnchorMiddle
+        .TextRange.Text = label
+        .TextRange.Font.Size = 11
+        .TextRange.ParagraphFormat.Alignment = msoAlignCenter
+    End With
+    tb.Left = c.Left + (c.Width - tb.Width) / 2
+    tb.Top = c.Top + (c.Height - tb.Height) / 2
+End Sub
+
 ' 矢印の記号 -> お手本の名前
 Private Function LineKind(ByVal op As String) As String
     Select Case op
@@ -346,15 +392,21 @@ Private Function LineOK(ByVal s As String, re As Object) As Boolean
     If d = "?" Then Exit Function
     If d <> "" Then LineOK = True: Exit Function
     If BadArrow(s) Then Exit Function
-    re.Pattern = "-\.->|==>|-->|---"
+    re.Pattern = ArrowPattern()
     If Not re.Test(s) Then LineOK = True: Exit Function
-    re.Pattern = "-\.->|==>|-->|---"
+    re.Pattern = ArrowPattern()
     pos = 1
     For Each m In re.Execute(s)
-        If Not NodeOK(Trim(Mid(s, pos, m.FirstIndex + 1 - pos))) Then Exit Function
+        If Not ChunkOK(Trim(Mid(s, pos, m.FirstIndex + 1 - pos))) Then Exit Function
         pos = m.FirstIndex + m.Length + 1
     Next
-    LineOK = NodeOK(Trim(Mid(s, pos)))
+    LineOK = ChunkOK(Trim(Mid(s, pos)))
+End Function
+
+' ノード部分に残った | は、条件の書き方が閉じられていない
+Private Function ChunkOK(ByVal s As String) As Boolean
+    If InStr(s, "|") > 0 Then Exit Function
+    ChunkOK = NodeOK(s)
 End Function
 
 ' 「--->」のようにダッシュが3つ以上続いて > が付くものは誤り。正しくは「-->」
@@ -485,6 +537,7 @@ Private Function NormalizeLine(ByVal s As String) As String
     s = Replace(s, "－", "-")
     s = Replace(s, "ー", "-")
     s = Replace(s, "＞", ">")
+    s = Replace(s, "｜", "|")
     s = Replace(s, "　", " ")
     NormalizeLine = s
 End Function
