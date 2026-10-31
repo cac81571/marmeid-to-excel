@@ -25,6 +25,7 @@ Private ShapeRules As Collection   ' äJén & vbLf & èIóπ & vbLf & ÉIÉuÉWÉFÉNÉgñºÅ
 Private LineOpList As Collection   ' ñÓàÛÇÃãLñ@ÅBÉVÅ[ÉgÇÃèá
 Private LineMap As Object          ' ñÓàÛÇÃãLñ@ -> ÉIÉuÉWÉFÉNÉgñº
 Private DirectionMap As Object     ' îzíuÇÃãLñ@ -> TD / LR
+Private ShapeNameMap As Object     ' @{ shape: ñºëO } ÇÃñºëO -> ÉIÉuÉWÉFÉNÉgñº
 Private DefaultShape As String     ' äáå ÇÃÇ»Ç¢ ID Ç…égÇ§ÉIÉuÉWÉFÉNÉgñº
 
 Sub MermaidToShapes()
@@ -501,6 +502,10 @@ End Sub
 Private Function NodeOK(ByVal s As String) As Boolean
     Dim openAt As Long, rule As String, id As String
     If s = "" Then Exit Function
+    If InStr(s, "@{") > 0 Then
+        NodeOK = AttrNodeOK(s)
+        Exit Function
+    End If
     If MatchShape(s, openAt, rule) Then
         NodeOK = IdOK(CleanId(Left(s, openAt - 1)))
         Exit Function
@@ -519,6 +524,10 @@ End Function
 Private Function ParseNode(ByVal s As String, nodes As Object, kinds As Object) As String
     Dim openAt As Long, rule As String, id As String, op As String, cl As String
     s = NormalizeLine(s)
+    If InStr(s, "@{") > 0 Then
+        ParseNode = ParseAttrNode(s, nodes, kinds)
+        Exit Function
+    End If
     If MatchShape(s, openAt, rule) Then
         id = CleanId(Left(s, openAt - 1))
         If Not IdOK(id) Then Exit Function
@@ -537,6 +546,97 @@ Private Function ParseNode(ByVal s As String, nodes As Object, kinds As Object) 
     ParseNode = id
 End Function
 
+' A@{ shape: lin-rect, label: "Lined process" } ÇÅAãLñ@ÉVÅ[ÉgÇÃ shape çsÇ≈ê}å`Ç…Ç∑ÇÈ
+Private Function ParseAttrNode(ByVal s As String, nodes As Object, kinds As Object) As String
+    Dim id As String, shapeName As String, labelText As String
+    If Not ReadAttrNode(s, id, shapeName, labelText) Then Exit Function
+    If Not ShapeNameMap.Exists(shapeName) Then Exit Function
+    kinds(id) = CStr(ShapeNameMap(shapeName))
+    nodes(id) = labelText
+    ParseAttrNode = id
+End Function
+
+Private Function AttrNodeOK(ByVal s As String) As Boolean
+    Dim id As String, shapeName As String, labelText As String
+    If Not ReadAttrNode(s, id, shapeName, labelText) Then Exit Function
+    AttrNodeOK = ShapeNameMap.Exists(shapeName)
+End Function
+
+Private Function ReadAttrNode(ByVal s As String, ByRef id As String, ByRef shapeName As String, ByRef labelText As String) As Boolean
+    Dim p As Long, q As Long
+    s = NormalizeLine(s)
+    p = InStr(s, "@{")
+    If p = 0 Then Exit Function
+    id = CleanId(Left$(s, p - 1))
+    If Not IdOK(id) Then Exit Function
+    q = ClosingBrace(s, p + 2)
+    If q = 0 Or q <> Len(s) Then Exit Function
+    If Not ParseAttrs(Mid$(s, p + 2, q - (p + 2)), shapeName, labelText) Then Exit Function
+    If labelText = "" Then labelText = id
+    ReadAttrNode = True
+End Function
+
+Private Function ClosingBrace(ByVal s As String, ByVal startAt As Long) As Long
+    Dim i As Long, ch As String, inQ As Boolean
+    For i = startAt To Len(s)
+        ch = Mid$(s, i, 1)
+        If ch = """" Then
+            inQ = Not inQ
+        ElseIf ch = "}" And Not inQ Then
+            ClosingBrace = i
+            Exit Function
+        End If
+    Next
+End Function
+
+Private Function ParseAttrs(ByVal body As String, ByRef shapeName As String, ByRef labelText As String) As Boolean
+    Dim parts As Collection, i As Long, part As String, p As Long, key As String, val As String
+    Set parts = SplitAttrs(body)
+    shapeName = "": labelText = ""
+    For i = 1 To parts.Count
+        part = Trim$(CStr(parts(i)))
+        If part <> "" Then
+            p = InStr(part, ":")
+            If p = 0 Then Exit Function
+            key = LCase$(Trim$(Left$(part, p - 1)))
+            val = Unquote(Trim$(Mid$(part, p + 1)))
+            Select Case key
+                Case "shape": shapeName = LCase$(val)
+                Case "label": labelText = val
+            End Select
+        End If
+    Next
+    ParseAttrs = (shapeName <> "")
+End Function
+
+Private Function SplitAttrs(ByVal body As String) As Collection
+    Dim out As New Collection
+    Dim i As Long, ch As String, inQ As Boolean, cur As String
+    For i = 1 To Len(body)
+        ch = Mid$(body, i, 1)
+        If ch = """" Then
+            inQ = Not inQ
+            cur = cur & ch
+        ElseIf ch = "," And Not inQ Then
+            out.Add cur
+            cur = ""
+        Else
+            cur = cur & ch
+        End If
+    Next
+    out.Add cur
+    Set SplitAttrs = out
+End Function
+
+Private Function Unquote(ByVal s As String) As String
+    If Len(s) >= 2 Then
+        If (Left$(s, 1) = """" And Right$(s, 1) = """") Or (Left$(s, 1) = "'" And Right$(s, 1) = "'") Then
+            s = Mid$(s, 2, Len(s) - 2)
+        End If
+    End If
+    Unquote = Replace(s, "\""", """")
+End Function
+
 ' ëSäpÇÃäáå Ç∆ñÓàÛãLçÜÇîºäpÇ…Ç∑ÇÈ
 Private Function NormalizeLine(ByVal s As String) As String
     s = Replace(s, "Åm", "[")
@@ -550,6 +650,8 @@ Private Function NormalizeLine(ByVal s As String) As String
     s = Replace(s, "ÅÑ", ">")
     s = Replace(s, "Åb", "|")
     s = Replace(s, "Å@", " ")
+    s = Replace(s, ChrW(&H201C), """")
+    s = Replace(s, ChrW(&H201D), """")
     NormalizeLine = s
 End Function
 
@@ -598,53 +700,77 @@ End Function
 Private Function LoadNotation(ByRef errMsg As String) As Boolean
     Dim ws As Worksheet
     Dim headerRow As Long, c As Long, r As Long
-    Dim openCol As Long, closeCol As Long, shapeNameCol As Long
+    Dim openCol As Long, closeCol As Long, shapeNameCol As Long, figCol As Long
     Dim lineOpCol As Long, lineNameCol As Long
-    Dim dirMeanCol As Long, dirNoteCol As Long
-    Dim foundOpen As Long, foundLineOp As Long, foundDir As Long
-    Dim op As String, cl As String, nm As String, lay As String
+    Dim dirMeanCol As Long, dirNoteCol As Long, metaCol As Long
+    Dim foundOpen As Long, foundFig As Long, foundLineOp As Long, foundDir As Long, foundMeta As Long
+    Dim op As String, cl As String, fig As String, nm As String, lay As String
 
     Set ws = Worksheets(NOTATION_SHEET)
     Set ShapeRules = New Collection
     Set LineOpList = New Collection
     Set LineMap = CreateObject("Scripting.Dictionary")
     Set DirectionMap = CreateObject("Scripting.Dictionary")
+    Set ShapeNameMap = CreateObject("Scripting.Dictionary")
     DefaultShape = ""
 
     For headerRow = 1 To 15
-        foundOpen = 0: foundLineOp = 0: foundDir = 0
+        foundOpen = 0: foundFig = 0: foundLineOp = 0: foundDir = 0: foundMeta = 0
         For c = 1 To 30
-            If CellText(ws, headerRow, c) = "äJén" And CellText(ws, headerRow, c + 1) = "èIóπ" And CellText(ws, headerRow, c + 2) = "ÉIÉuÉWÉFÉNÉgñº" Then foundOpen = c
+            If CellText(ws, headerRow, c) = "äJén" And CellText(ws, headerRow, c + 1) = "èIóπ" Then
+                If CellText(ws, headerRow, c + 2) = "ê}å`" And CellText(ws, headerRow, c + 3) = "ÉIÉuÉWÉFÉNÉgñº" Then
+                    foundOpen = c
+                    foundFig = c + 2
+                ElseIf CellText(ws, headerRow, c + 2) = "ÉIÉuÉWÉFÉNÉgñº" Then
+                    foundOpen = c
+                    foundFig = 0
+                End If
+            End If
             If CellText(ws, headerRow, c) = "ãLñ@" And CellText(ws, headerRow, c + 1) = "ÉIÉuÉWÉFÉNÉgñº" Then foundLineOp = c
             If CellText(ws, headerRow, c) = "îzíuï˚å¸" And CellText(ws, headerRow, c + 1) = "ãLñ@" Then foundDir = c
+            If StrComp(CellText(ws, headerRow, c), "shape", vbTextCompare) = 0 And CellText(ws, headerRow, c + 1) = "ÉIÉuÉWÉFÉNÉgñº" Then foundMeta = c
         Next
         If foundOpen > 0 And foundLineOp > 0 Then
             openCol = foundOpen
             closeCol = foundOpen + 1
-            shapeNameCol = foundOpen + 2
+            figCol = foundFig
+            If foundFig > 0 Then shapeNameCol = foundFig + 1 Else shapeNameCol = foundOpen + 2
             lineOpCol = foundLineOp
             lineNameCol = foundLineOp + 1
             dirMeanCol = foundDir
             dirNoteCol = foundDir + 1
+            metaCol = foundMeta
             Exit For
         End If
     Next
     If openCol = 0 Or lineOpCol = 0 Then
-        errMsg = "ÅuãLñ@ÅvÉVÅ[ÉgÇ…ÅAäJénÅEèIóπÅEÉIÉuÉWÉFÉNÉgñºÇ∆ÅAê¸ÇÃãLñ@ÅEÉIÉuÉWÉFÉNÉgñºÇÃå©èoÇµÇ™ïKóvÇ≈Ç∑ÅB"
+        errMsg = "ÅuãLñ@ÅvÉVÅ[ÉgÇ…ÅAäJénÅEèIóπÅEÉIÉuÉWÉFÉNÉgñºÅiê}å`óÒÇ™Ç†Ç¡ÇƒÇ‡ÇÊÇ¢ÅjÇ∆ÅAê¸ÇÃãLñ@ÅEÉIÉuÉWÉFÉNÉgñºÇÃå©èoÇµÇ™ïKóvÇ≈Ç∑ÅB"
         Exit Function
     End If
 
     For r = headerRow + 1 To headerRow + 300
         op = NormalizeLine(CellText(ws, r, openCol))
         cl = NormalizeLine(CellText(ws, r, closeCol))
+        If figCol > 0 Then fig = LCase$(NormalizeLine(CellText(ws, r, figCol))) Else fig = ""
         nm = CellText(ws, r, shapeNameCol)
-        If op <> "" Or cl <> "" Or nm <> "" Then
-            If op = "" Or cl = "" Or nm = "" Then
-                errMsg = "ÅuãLñ@ÅvÉVÅ[ÉgÇÃ " & r & " çsñ⁄ÇÕÅAäJénÅEèIóπÅEÉIÉuÉWÉFÉNÉgñºÇÇ∑Ç◊Çƒì¸ÇÍÇƒÇ≠ÇæÇ≥Ç¢ÅB"
+        If op <> "" Or cl <> "" Or fig <> "" Or nm <> "" Then
+            If op <> "" Or cl <> "" Then
+                If op = "" Or cl = "" Or nm = "" Then
+                    errMsg = "ÅuãLñ@ÅvÉVÅ[ÉgÇÃ " & r & " çsñ⁄ÇÕÅAäJénÅEèIóπÅEÉIÉuÉWÉFÉNÉgñºÇÇ∑Ç◊Çƒì¸ÇÍÇƒÇ≠ÇæÇ≥Ç¢ÅB"
+                    Exit Function
+                End If
+                If DefaultShape = "" Or (op = "[" And cl = "]") Then DefaultShape = nm
+                AddShapeRule op, cl, nm
+            ElseIf fig <> "" Then
+                If nm = "" Then
+                    errMsg = "ÅuãLñ@ÅvÉVÅ[ÉgÇÃ " & r & " çsñ⁄ÇÕÅAê}å`Ç∆ÉIÉuÉWÉFÉNÉgñºÇì¸ÇÍÇƒÇ≠ÇæÇ≥Ç¢ÅB"
+                    Exit Function
+                End If
+                ShapeNameMap(fig) = nm
+            Else
+                errMsg = "ÅuãLñ@ÅvÉVÅ[ÉgÇÃ " & r & " çsñ⁄ÇÕÅAäJénÇ∆èIóπÅAÇ‹ÇΩÇÕê}å`Çì¸ÇÍÇƒÇ≠ÇæÇ≥Ç¢ÅB"
                 Exit Function
             End If
-            If DefaultShape = "" Or (op = "[" And cl = "]") Then DefaultShape = nm
-            AddShapeRule op, cl, nm
         End If
     Next
     If ShapeRules.Count = 0 Then
@@ -688,6 +814,19 @@ Private Function LoadNotation(ByRef errMsg As String) As Boolean
         Next
     End If
     If DirectionMap.Count = 0 Then AddDefaultDirections
+    If metaCol > 0 Then
+        For r = headerRow + 1 To headerRow + 300
+            op = LCase$(NormalizeLine(CellText(ws, r, metaCol)))
+            nm = CellText(ws, r, metaCol + 1)
+            If op <> "" Or nm <> "" Then
+                If op = "" Or nm = "" Then
+                    errMsg = "ÅuãLñ@ÅvÉVÅ[ÉgÇÃ " & r & " çsñ⁄ÇÕÅAshape Ç∆ÉIÉuÉWÉFÉNÉgñºÇì¸ÇÍÇƒÇ≠ÇæÇ≥Ç¢ÅB"
+                    Exit Function
+                End If
+                ShapeNameMap(op) = nm
+            End If
+        Next
+    End If
     LoadNotation = True
 End Function
 
