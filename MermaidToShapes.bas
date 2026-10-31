@@ -3,7 +3,7 @@ Option Explicit
 
 ' Mermaid フローチャート -> Excel オートシェイプ変換
 ' アクティブシートの A 列に Mermaid の行を書いて MermaidToShapes を実行する。
-' 配置は flowchart TD（上から下）または flowchart LR（左から右）。省略時は TD。
+' 配置は「記法」シートの配置方向。上から下は TD、左から右は LR。省略時は TD。
 ' 記法とオブジェクト名の対応は「記法」シート。お手本図形は「設定」シート（オブジェクト名で置く）。
 
 Private Const SETTING_SHEET As String = "設定"
@@ -12,6 +12,7 @@ Private Const NOTATION_SHEET As String = "記法"
 Private ShapeRules As Collection   ' 開始 & vbLf & 終了 & vbLf & オブジェクト名。開始が長い順
 Private LineOpList As Collection   ' 矢印の記法。シートの順
 Private LineMap As Object          ' 矢印の記法 -> オブジェクト名
+Private DirectionMap As Object     ' 配置の記法 -> TD / LR
 Private DefaultShape As String     ' 括弧のない ID に使うオブジェクト名
 
 Sub MermaidToShapes()
@@ -444,21 +445,45 @@ Private Function ArrowEdgeOK(ByVal s As String, ByVal firstIndex As Long, ByVal 
     ArrowEdgeOK = True
 End Function
 
-' flowchart TD / LR を読む。方向の行でなければ空、未対応の方向は "?"
+' 記法シートの配置方向を読む。方向の行でなければ空、シートにない flowchart / graph は "?"
 Private Function DirectionOf(ByVal s As String) As String
-    Dim re As Object, matches As Object, dir As String
+    Dim re As Object, key As String
+    key = DirectionKey(s)
+    If key <> "" And DirectionMap.Exists(key) Then
+        DirectionOf = CStr(DirectionMap(key))
+        Exit Function
+    End If
     Set re = CreateObject("VBScript.RegExp")
     re.IgnoreCase = True
-    re.Pattern = "^(flowchart|graph)(\s+([A-Za-z]+))?\s*$"
-    Set matches = re.Execute(s)
-    If matches.Count = 0 Then Exit Function
-    dir = UCase$(Trim$(matches(0).SubMatches(2) & ""))
-    Select Case dir
-        Case "", "TD", "TB": DirectionOf = "TD"
-        Case "LR": DirectionOf = "LR"
-        Case Else: DirectionOf = "?"
+    re.Pattern = "^(flowchart|graph)(\s+\S+)?\s*$"
+    If re.Test(s) Then DirectionOf = "?"
+End Function
+
+Private Function DirectionKey(ByVal s As String) As String
+    Dim re As Object
+    Set re = CreateObject("VBScript.RegExp")
+    re.Global = True
+    re.Pattern = "\s+"
+    DirectionKey = UCase$(re.Replace(Trim$(NormalizeLine(s)), " "))
+End Function
+
+Private Function LayoutCode(ByVal meaning As String) As String
+    Select Case meaning
+        Case "上から下": LayoutCode = "TD"
+        Case "左から右": LayoutCode = "LR"
     End Select
 End Function
+
+Private Sub AddDefaultDirections()
+    DirectionMap(DirectionKey("flowchart TD")) = "TD"
+    DirectionMap(DirectionKey("flowchart TB")) = "TD"
+    DirectionMap(DirectionKey("flowchart")) = "TD"
+    DirectionMap(DirectionKey("graph TD")) = "TD"
+    DirectionMap(DirectionKey("graph TB")) = "TD"
+    DirectionMap(DirectionKey("graph")) = "TD"
+    DirectionMap(DirectionKey("flowchart LR")) = "LR"
+    DirectionMap(DirectionKey("graph LR")) = "LR"
+End Sub
 
 ' 閉じ記号が末尾にあるときだけ正しい記法とする
 Private Function NodeOK(ByVal s As String) As Boolean
@@ -563,20 +588,23 @@ Private Function LoadNotation(ByRef errMsg As String) As Boolean
     Dim headerRow As Long, c As Long, r As Long
     Dim openCol As Long, closeCol As Long, shapeNameCol As Long
     Dim lineOpCol As Long, lineNameCol As Long
-    Dim foundOpen As Long, foundLineOp As Long
-    Dim op As String, cl As String, nm As String
+    Dim dirMeanCol As Long, dirNoteCol As Long
+    Dim foundOpen As Long, foundLineOp As Long, foundDir As Long
+    Dim op As String, cl As String, nm As String, lay As String
 
     Set ws = Worksheets(NOTATION_SHEET)
     Set ShapeRules = New Collection
     Set LineOpList = New Collection
     Set LineMap = CreateObject("Scripting.Dictionary")
+    Set DirectionMap = CreateObject("Scripting.Dictionary")
     DefaultShape = ""
 
     For headerRow = 1 To 15
-        foundOpen = 0: foundLineOp = 0
+        foundOpen = 0: foundLineOp = 0: foundDir = 0
         For c = 1 To 30
             If CellText(ws, headerRow, c) = "開始" And CellText(ws, headerRow, c + 1) = "終了" And CellText(ws, headerRow, c + 2) = "オブジェクト名" Then foundOpen = c
             If CellText(ws, headerRow, c) = "記法" And CellText(ws, headerRow, c + 1) = "オブジェクト名" Then foundLineOp = c
+            If CellText(ws, headerRow, c) = "配置方向" And CellText(ws, headerRow, c + 1) = "記法" Then foundDir = c
         Next
         If foundOpen > 0 And foundLineOp > 0 Then
             openCol = foundOpen
@@ -584,6 +612,8 @@ Private Function LoadNotation(ByRef errMsg As String) As Boolean
             shapeNameCol = foundOpen + 2
             lineOpCol = foundLineOp
             lineNameCol = foundLineOp + 1
+            dirMeanCol = foundDir
+            dirNoteCol = foundDir + 1
             Exit For
         End If
     Next
@@ -596,13 +626,14 @@ Private Function LoadNotation(ByRef errMsg As String) As Boolean
         op = NormalizeLine(CellText(ws, r, openCol))
         cl = NormalizeLine(CellText(ws, r, closeCol))
         nm = CellText(ws, r, shapeNameCol)
-        If op = "" And cl = "" And nm = "" Then Exit For
-        If op = "" Or cl = "" Or nm = "" Then
-            errMsg = "「記法」シートの " & r & " 行目は、開始・終了・オブジェクト名をすべて入れてください。"
-            Exit Function
+        If op <> "" Or cl <> "" Or nm <> "" Then
+            If op = "" Or cl = "" Or nm = "" Then
+                errMsg = "「記法」シートの " & r & " 行目は、開始・終了・オブジェクト名をすべて入れてください。"
+                Exit Function
+            End If
+            If DefaultShape = "" Or (op = "[" And cl = "]") Then DefaultShape = nm
+            AddShapeRule op, cl, nm
         End If
-        If DefaultShape = "" Or (op = "[" And cl = "]") Then DefaultShape = nm
-        AddShapeRule op, cl, nm
     Next
     If ShapeRules.Count = 0 Then
         errMsg = "「記法」シートに図形の行がありません。"
@@ -612,18 +643,39 @@ Private Function LoadNotation(ByRef errMsg As String) As Boolean
     For r = headerRow + 1 To headerRow + 300
         op = NormalizeLine(CellText(ws, r, lineOpCol))
         nm = CellText(ws, r, lineNameCol)
-        If op = "" And nm = "" Then Exit For
-        If op = "" Or nm = "" Then
-            errMsg = "「記法」シートの " & r & " 行目は、線の記法とオブジェクト名を入れてください。"
-            Exit Function
+        If op <> "" Or nm <> "" Then
+            If op = "" Or nm = "" Then
+                errMsg = "「記法」シートの " & r & " 行目は、線の記法とオブジェクト名を入れてください。"
+                Exit Function
+            End If
+            If Not LineMap.Exists(op) Then LineOpList.Add op
+            LineMap(op) = nm
         End If
-        If Not LineMap.Exists(op) Then LineOpList.Add op
-        LineMap(op) = nm
     Next
     If LineOpList.Count = 0 Then
         errMsg = "「記法」シートに線の行がありません。"
         Exit Function
     End If
+
+    If dirMeanCol > 0 Then
+        For r = headerRow + 1 To headerRow + 300
+            nm = CellText(ws, r, dirMeanCol)
+            op = DirectionKey(CellText(ws, r, dirNoteCol))
+            If nm <> "" Or op <> "" Then
+                If nm = "" Or op = "" Then
+                    errMsg = "「記法」シートの " & r & " 行目は、配置方向と記法を入れてください。"
+                    Exit Function
+                End If
+                lay = LayoutCode(nm)
+                If lay = "" Then
+                    errMsg = "「記法」シートの " & r & " 行目の配置方向は、「上から下」または「左から右」にしてください。"
+                    Exit Function
+                End If
+                DirectionMap(op) = lay
+            End If
+        Next
+    End If
+    If DirectionMap.Count = 0 Then AddDefaultDirections
     LoadNotation = True
 End Function
 
