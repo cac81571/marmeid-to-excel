@@ -4,24 +4,34 @@ Option Explicit
 ' Mermaid フローチャート -> Excel オートシェイプ変換
 ' アクティブシートの A 列に Mermaid の行を書いて MermaidToShapes を実行する。
 ' 配置は flowchart TD（上から下）または flowchart LR（左から右）。省略時は TD。
-' 「設定」シートに次の名前のお手本図形を置くこと:
-'   tpl_box       四角形       A[処理]
-'   tpl_round     角丸四角形   A(開始)
-'   tpl_diamond   ひし形       A{条件}
-'   tpl_para      平行四辺形   A[/入力/]  A[\入力\]
-'   tpl_cylinder  円柱         A[(DB)]
-'   tpl_circle    円           A((終了))
-'   tpl_file      書類         A[{書類}]
-'   tpl_files     複数書類     A[{{複数書類}}]
-'   tpl_line, tpl_line_none, tpl_line_dot, tpl_line_thick
+' 記法とオブジェクト名の対応は「記法」シート。お手本図形は「設定」シート（オブジェクト名で置く）。
 
 Private Const SETTING_SHEET As String = "設定"
+Private Const NOTATION_SHEET As String = "記法"
+
+Private ShapeRules As Collection   ' 開始 & vbLf & 終了 & vbLf & オブジェクト名。開始が長い順
+Private LineOpList As Collection   ' 矢印の記法。シートの順
+Private LineMap As Object          ' 矢印の記法 -> オブジェクト名
+Private DefaultShape As String     ' 括弧のない ID に使うオブジェクト名
 
 Sub MermaidToShapes()
     Dim ws As Worksheet: Set ws = ActiveSheet
+    Dim noteErr As String
+    If Not SheetExists(NOTATION_SHEET) Then
+        MsgBox "「記法」シートがありません。", vbExclamation
+        Exit Sub
+    End If
+    If Not SheetExists(SETTING_SHEET) Then
+        MsgBox "「設定」シートがありません。", vbExclamation
+        Exit Sub
+    End If
+    If Not LoadNotation(noteErr) Then
+        MsgBox noteErr, vbExclamation
+        Exit Sub
+    End If
     Dim cfg As Worksheet: Set cfg = Worksheets(SETTING_SHEET)
     Dim nodes As Object: Set nodes = CreateObject("Scripting.Dictionary")  ' id -> 表示文字
-    Dim kinds As Object: Set kinds = CreateObject("Scripting.Dictionary")  ' id -> box / round / diamond / para / cylinder / circle / file / files
+    Dim kinds As Object: Set kinds = CreateObject("Scripting.Dictionary")  ' id -> オブジェクト名
     Dim level As Object: Set level = CreateObject("Scripting.Dictionary")
     Dim edges As New Collection
     Dim r As Long, s As String, flow As String, d As String
@@ -77,7 +87,7 @@ Sub MermaidToShapes()
     Dim need As Object, miss As String
     Set need = CreateObject("Scripting.Dictionary")
     For Each k In nodes.Keys
-        need("tpl_" & kinds(k)) = True
+        need(CStr(kinds(k))) = True
     Next
     For Each e In edges
         need(EdgePart(e, 2)) = True
@@ -94,7 +104,7 @@ Sub MermaidToShapes()
     Dim shp As Object: Set shp = CreateObject("Scripting.Dictionary")
     Dim sh As Shape
     For Each k In nodes.Keys
-        Set sh = CopyTemplate(FindTemplate(cfg, "tpl_" & kinds(k)), ws)
+        Set sh = CopyTemplate(FindTemplate(cfg, CStr(kinds(k))), ws)
         sh.Name = "node_" & k
         sh.TextFrame2.TextRange.Text = nodes(k)
         Set shp(k) = sh
@@ -331,9 +341,25 @@ Private Sub SiteXY(sh As Shape, ByVal site As Long, ByRef x As Single, ByRef y A
     Next
 End Sub
 
-' 「-->」「---|Yes|」のように、矢印と任意の条件文字
+' 「記法」シートの矢印を、長い順に並べた正規表現にする
 Private Function ArrowPattern() As String
-    ArrowPattern = "(-\.->|==>|-->|---)\s*(\|[^|]*\|)?"
+    Dim n As Long, i As Long, j As Long
+    Dim ops() As String, tmp As String
+    n = LineOpList.Count
+    If n < 1 Then ArrowPattern = "$^": Exit Function
+    ReDim ops(1 To n)
+    For i = 1 To n: ops(i) = CStr(LineOpList(i)): Next
+    For i = 1 To n - 1
+        For j = i + 1 To n
+            If Len(ops(j)) > Len(ops(i)) Then tmp = ops(i): ops(i) = ops(j): ops(j) = tmp
+        Next
+    Next
+    tmp = ""
+    For i = 1 To n
+        If tmp <> "" Then tmp = tmp & "|"
+        tmp = tmp & RegexEscape(ops(i))
+    Next
+    ArrowPattern = "(" & tmp & ")\s*(\|[^|]*\|)?"
 End Function
 
 Private Function ArrowOp(ByVal token As String) As String
@@ -375,14 +401,9 @@ Private Sub AddLineLabel(ws As Worksheet, c As Shape, ByVal label As String)
     tb.Top = c.Top + (c.Height - tb.Height) / 2
 End Sub
 
-' 矢印の記号 -> お手本の名前
+' 矢印の記号 -> 記法シートのオブジェクト名
 Private Function LineKind(ByVal op As String) As String
-    Select Case op
-        Case "---":  LineKind = "tpl_line_none"
-        Case "-.->": LineKind = "tpl_line_dot"
-        Case "==>":  LineKind = "tpl_line_thick"
-        Case Else:   LineKind = "tpl_line"
-    End Select
+    If LineMap.Exists(op) Then LineKind = CStr(LineMap(op))
 End Function
 
 ' 矢印を含む行の各ノードが、対応している記法かどうか
@@ -391,12 +412,12 @@ Private Function LineOK(ByVal s As String, re As Object) As Boolean
     d = DirectionOf(s)
     If d = "?" Then Exit Function
     If d <> "" Then LineOK = True: Exit Function
-    If BadArrow(s) Then Exit Function
     re.Pattern = ArrowPattern()
     If Not re.Test(s) Then LineOK = True: Exit Function
     re.Pattern = ArrowPattern()
     pos = 1
     For Each m In re.Execute(s)
+        If Not ArrowEdgeOK(s, m.FirstIndex, ArrowOp(m.Value)) Then Exit Function
         If Not ChunkOK(Trim(Mid(s, pos, m.FirstIndex + 1 - pos))) Then Exit Function
         pos = m.FirstIndex + m.Length + 1
     Next
@@ -409,12 +430,18 @@ Private Function ChunkOK(ByVal s As String) As Boolean
     ChunkOK = NodeOK(s)
 End Function
 
-' 「--->」のようにダッシュが3つ以上続いて > が付くものは誤り。正しくは「-->」
-Private Function BadArrow(ByVal s As String) As Boolean
-    Dim bad As Object
-    Set bad = CreateObject("VBScript.RegExp")
-    bad.Pattern = "-{3,}>"
-    BadArrow = bad.Test(s)
+' 定義より長い矢印（「--->」など）は、マッチの前後に矢印の文字が残る
+Private Function ArrowEdgeOK(ByVal s As String, ByVal firstIndex As Long, ByVal op As String) As Boolean
+    Dim ch As String
+    If firstIndex >= 1 Then
+        ch = Mid(s, firstIndex, 1)
+        If ch = "-" Or ch = "." Or ch = "=" Or ch = ">" Then Exit Function
+    End If
+    If firstIndex + Len(op) + 1 <= Len(s) Then
+        ch = Mid(s, firstIndex + Len(op) + 1, 1)
+        If ch = "-" Or ch = "." Or ch = "=" Or ch = ">" Then Exit Function
+    End If
+    ArrowEdgeOK = True
 End Function
 
 ' flowchart TD / LR を読む。方向の行でなければ空、未対応の方向は "?"
@@ -435,41 +462,14 @@ End Function
 
 ' 閉じ記号が末尾にあるときだけ正しい記法とする
 Private Function NodeOK(ByVal s As String) As Boolean
-    Dim i As Long, p As Long, ch As String, id As String, mark As String
-    Dim openLen As Long, closer As String
+    Dim openAt As Long, rule As String, id As String
     If s = "" Then Exit Function
-    For i = 1 To Len(s)
-        ch = Mid(s, i, 1)
-        If ch = "[" Or ch = "(" Or ch = "{" Then p = i: Exit For
-    Next
-    If p = 0 Then
-        id = CleanId(s)
-        NodeOK = (id <> "" And InStr(s, "]") = 0 And InStr(s, ")") = 0 And InStr(s, "}") = 0 And InStr(s, "|") = 0)
+    If MatchShape(s, openAt, rule) Then
+        NodeOK = IdOK(CleanId(Left(s, openAt - 1)))
         Exit Function
     End If
-    id = CleanId(Left(s, p - 1))
-    If id = "" Or InStr(id, "]") > 0 Or InStr(id, ")") > 0 Or InStr(id, "}") > 0 Or InStr(id, "|") > 0 Then Exit Function
-    If Mid(s, p, 3) = "[{{" Then NodeOK = CloserAtEnd(s, p + 3, "}}]"): Exit Function
-    mark = Mid(s, p, 2)
-    openLen = 2
-    Select Case mark
-        Case "[{": closer = "}]"
-        Case "[(": closer = ")]"
-        Case "((": closer = "))"
-        Case "[/": closer = "/]"
-        Case "[\": closer = "\]"
-        Case Else
-            openLen = 1
-            Select Case Left(mark, 1)
-                Case "{": closer = "}"
-                Case "("
-                    If Mid(s, p + 1, 1) = "[" Then Exit Function
-                    closer = ")"
-                Case "[": closer = "]"
-                Case Else: Exit Function
-            End Select
-    End Select
-    NodeOK = CloserAtEnd(s, p + openLen, closer)
+    If HasOpenMark(s) Then Exit Function
+    NodeOK = IdOK(CleanId(s))
 End Function
 
 Private Function CloserAtEnd(ByVal s As String, ByVal startAt As Long, ByVal closer As String) As Boolean
@@ -478,49 +478,23 @@ Private Function CloserAtEnd(ByVal s As String, ByVal startAt As Long, ByVal clo
     CloserAtEnd = (q > 0 And q + Len(closer) - 1 = Len(s))
 End Function
 
-' "A[処理]" "A(開始)" "A{条件}" "A[/入力/]" "A[(DB)]" "A((終了))" "A[{書類}]" "A[{{複数書類}}]" "C" を解析して id を返す
-' kinds: box / round / diamond / para / cylinder / circle / file / files
+' 記法シートの開始・終了に合うノードを解析して id を返す。kinds にはオブジェクト名を入れる
 Private Function ParseNode(ByVal s As String, nodes As Object, kinds As Object) As String
-    Dim i As Long, p As Long, id As String, mark As String
+    Dim openAt As Long, rule As String, id As String, op As String, cl As String
     s = NormalizeLine(s)
-    For i = 1 To Len(s)
-        mark = Mid(s, i, 1)
-        If mark = "[" Or mark = "(" Or mark = "{" Then p = i: Exit For
-    Next
-    If p > 0 Then
-        id = CleanId(Left(s, p - 1))
-        If id = "" Then Exit Function
-        mark = Mid(s, p, 3)
-        If mark = "[{{" Then
-            kinds(id) = "files"
-            nodes(id) = NodeText(s, p + 3, "}}]")
-        Else
-            mark = Left(mark, 2)
-            Select Case mark
-                Case "[{"
-                    kinds(id) = "file"
-                    nodes(id) = NodeText(s, p + 2, "}]")
-                Case "[("
-                    kinds(id) = "cylinder"
-                    nodes(id) = NodeText(s, p + 2, ")]")
-                Case "(("
-                    kinds(id) = "circle"
-                    nodes(id) = NodeText(s, p + 2, "))")
-                Case "[/", "[\"
-                    kinds(id) = "para"
-                    nodes(id) = NodeText(s, p + 2, IIf(mark = "[/", "/]", "\]"))
-                Case Else
-                    Select Case Left(mark, 1)
-                        Case "{": kinds(id) = "diamond": nodes(id) = NodeText(s, p + 1, "}")
-                        Case "(": kinds(id) = "round": nodes(id) = NodeText(s, p + 1, ")")
-                        Case Else: kinds(id) = "box": nodes(id) = NodeText(s, p + 1, "]")
-                    End Select
-            End Select
-        End If
+    If MatchShape(s, openAt, rule) Then
+        id = CleanId(Left(s, openAt - 1))
+        If Not IdOK(id) Then Exit Function
+        op = EdgePart(rule, 0)
+        cl = EdgePart(rule, 1)
+        kinds(id) = EdgePart(rule, 2)
+        nodes(id) = NodeText(s, openAt + Len(op), cl)
     Else
         id = CleanId(s)
-        If id <> "" Then
-            If Not nodes.Exists(id) Then nodes(id) = id: kinds(id) = "box"
+        If IdOK(id) And Not HasOpenMark(s) Then
+            If Not nodes.Exists(id) Then nodes(id) = id: kinds(id) = DefaultShape
+        Else
+            id = ""
         End If
     End If
     ParseNode = id
@@ -570,4 +544,144 @@ Private Function NodeText(ByVal s As String, ByVal startAt As Long, ByVal closer
     Dim q As Long
     q = InStr(startAt, s, closer)
     If q > 0 Then NodeText = Trim(Mid(s, startAt, q - startAt)) Else NodeText = Trim(Mid(s, startAt))
+End Function
+
+Private Function SheetExists(ByVal name As String) As Boolean
+    Dim ws As Worksheet
+    For Each ws In Worksheets
+        If StrComp(ws.Name, name, vbTextCompare) = 0 Then SheetExists = True: Exit Function
+    Next
+End Function
+
+Private Function CellText(ws As Worksheet, ByVal row As Long, ByVal col As Long) As String
+    CellText = Trim(CStr(ws.Cells(row, col).Value & ""))
+End Function
+
+' 「記法」シートから、図形の開始・終了と線の記法を読む
+Private Function LoadNotation(ByRef errMsg As String) As Boolean
+    Dim ws As Worksheet
+    Dim headerRow As Long, c As Long, r As Long
+    Dim openCol As Long, closeCol As Long, shapeNameCol As Long
+    Dim lineOpCol As Long, lineNameCol As Long
+    Dim foundOpen As Long, foundLineOp As Long
+    Dim op As String, cl As String, nm As String
+
+    Set ws = Worksheets(NOTATION_SHEET)
+    Set ShapeRules = New Collection
+    Set LineOpList = New Collection
+    Set LineMap = CreateObject("Scripting.Dictionary")
+    DefaultShape = ""
+
+    For headerRow = 1 To 15
+        foundOpen = 0: foundLineOp = 0
+        For c = 1 To 30
+            If CellText(ws, headerRow, c) = "開始" And CellText(ws, headerRow, c + 1) = "終了" And CellText(ws, headerRow, c + 2) = "オブジェクト名" Then foundOpen = c
+            If CellText(ws, headerRow, c) = "記法" And CellText(ws, headerRow, c + 1) = "オブジェクト名" Then foundLineOp = c
+        Next
+        If foundOpen > 0 And foundLineOp > 0 Then
+            openCol = foundOpen
+            closeCol = foundOpen + 1
+            shapeNameCol = foundOpen + 2
+            lineOpCol = foundLineOp
+            lineNameCol = foundLineOp + 1
+            Exit For
+        End If
+    Next
+    If openCol = 0 Or lineOpCol = 0 Then
+        errMsg = "「記法」シートに、開始・終了・オブジェクト名と、線の記法・オブジェクト名の見出しが必要です。"
+        Exit Function
+    End If
+
+    For r = headerRow + 1 To headerRow + 300
+        op = NormalizeLine(CellText(ws, r, openCol))
+        cl = NormalizeLine(CellText(ws, r, closeCol))
+        nm = CellText(ws, r, shapeNameCol)
+        If op = "" And cl = "" And nm = "" Then Exit For
+        If op = "" Or cl = "" Or nm = "" Then
+            errMsg = "「記法」シートの " & r & " 行目は、開始・終了・オブジェクト名をすべて入れてください。"
+            Exit Function
+        End If
+        If DefaultShape = "" Or (op = "[" And cl = "]") Then DefaultShape = nm
+        AddShapeRule op, cl, nm
+    Next
+    If ShapeRules.Count = 0 Then
+        errMsg = "「記法」シートに図形の行がありません。"
+        Exit Function
+    End If
+
+    For r = headerRow + 1 To headerRow + 300
+        op = NormalizeLine(CellText(ws, r, lineOpCol))
+        nm = CellText(ws, r, lineNameCol)
+        If op = "" And nm = "" Then Exit For
+        If op = "" Or nm = "" Then
+            errMsg = "「記法」シートの " & r & " 行目は、線の記法とオブジェクト名を入れてください。"
+            Exit Function
+        End If
+        If Not LineMap.Exists(op) Then LineOpList.Add op
+        LineMap(op) = nm
+    Next
+    If LineOpList.Count = 0 Then
+        errMsg = "「記法」シートに線の行がありません。"
+        Exit Function
+    End If
+    LoadNotation = True
+End Function
+
+' 開始が長いルールを先に試す
+Private Sub AddShapeRule(ByVal op As String, ByVal cl As String, ByVal nm As String)
+    Dim item As String, i As Long
+    item = op & vbLf & cl & vbLf & nm
+    For i = 1 To ShapeRules.Count
+        If Len(EdgePart(CStr(ShapeRules(i)), 0)) < Len(op) Then
+            ShapeRules.Add item, Before:=i
+            Exit Sub
+        End If
+    Next
+    ShapeRules.Add item
+End Sub
+
+' 左から見て、開始が一致し終了が末尾にある最初のルール
+Private Function MatchShape(ByVal s As String, ByRef openAt As Long, ByRef rule As String) As Boolean
+    Dim i As Long, item, op As String, cl As String
+    For i = 1 To Len(s)
+        For Each item In ShapeRules
+            op = EdgePart(CStr(item), 0)
+            If Mid(s, i, Len(op)) = op Then
+                cl = EdgePart(CStr(item), 1)
+                If CloserAtEnd(s, i + Len(op), cl) Then
+                    openAt = i
+                    rule = CStr(item)
+                    MatchShape = True
+                    Exit Function
+                End If
+            End If
+        Next
+    Next
+End Function
+
+Private Function HasOpenMark(ByVal s As String) As Boolean
+    Dim item, op As String
+    For Each item In ShapeRules
+        op = EdgePart(CStr(item), 0)
+        If op <> "" And InStr(s, op) > 0 Then HasOpenMark = True: Exit Function
+    Next
+End Function
+
+Private Function IdOK(ByVal id As String) As Boolean
+    Dim i As Long, ch As String
+    If id = "" Or InStr(id, "|") > 0 Then Exit Function
+    For i = 1 To Len(id)
+        ch = Mid(id, i, 1)
+        If ch = "[" Or ch = "]" Or ch = "(" Or ch = ")" Or ch = "{" Or ch = "}" Then Exit Function
+    Next
+    IdOK = True
+End Function
+
+Private Function RegexEscape(ByVal s As String) As String
+    Dim i As Long, ch As String, out As String
+    For i = 1 To Len(s)
+        ch = Mid(s, i, 1)
+        If InStr("\.+*?^${}()|[]-", ch) > 0 Then out = out & "\" & ch Else out = out & ch
+    Next
+    RegexEscape = out
 End Function
