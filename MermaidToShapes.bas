@@ -637,25 +637,14 @@ Private Function Unquote(ByVal s As String) As String
     Unquote = Replace(s, "\""", """")
 End Function
 
-' ‘SŠp‚ÌŠ‡ŒÊ‚Æ–îˆó‹L†‚ğ”¼Šp‚É‚·‚é
+' ‹È‚ª‚Á‚½ˆø—p•„‚¾‚¯‚ğ’¼‚·B‘SŠp‚Ì‰p”š‚âŠ‡ŒÊ‚Í”¼Šp‚É‚µ‚È‚¢
 Private Function NormalizeLine(ByVal s As String) As String
-    s = Replace(s, "m", "[")
-    s = Replace(s, "n", "]")
-    s = Replace(s, "i", "(")
-    s = Replace(s, "j", ")")
-    s = Replace(s, "o", "{")
-    s = Replace(s, "p", "}")
-    s = Replace(s, "|", "-")
-    s = Replace(s, "[", "-")
-    s = Replace(s, "„", ">")
-    s = Replace(s, "b", "|")
-    s = Replace(s, "@", " ")
     s = Replace(s, ChrW(&H201C), """")
     s = Replace(s, ChrW(&H201D), """")
     NormalizeLine = s
 End Function
 
-' Œ©‚½–Ú‚ª“¯‚¶ ID ‚ğ“¯‚¶•¶š‚É‚»‚ë‚¦‚é
+' Œ©‚¦‚È‚¢•¶š‚¾‚¯‚ğœ‚­B‘SŠp‚Ì‰p”š‚Í”¼Šp‚É‚µ‚È‚¢
 Private Function CleanId(ByVal s As String) As String
     Dim i As Long, ch As String, code As Long, out As String
     For i = 1 To Len(s)
@@ -663,9 +652,6 @@ Private Function CleanId(ByVal s As String) As String
         code = AscW(ch)
         Select Case code
             Case 9, 10, 13, 160, &H200B, &HFEFF
-            Case &HFF10 To &HFF19: out = out & ChrW(code - &HFF10 + AscW("0"))
-            Case &HFF21 To &HFF3A: out = out & ChrW(code - &HFF21 + AscW("A"))
-            Case &HFF41 To &HFF5A: out = out & ChrW(code - &HFF41 + AscW("a"))
             Case Else: out = out & ch
         End Select
     Next
