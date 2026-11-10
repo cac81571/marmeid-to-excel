@@ -4,12 +4,12 @@ Option Explicit
 ' Mermaid フローチャート -> Excel オートシェイプ変換
 ' アクティブシートの A 列に Mermaid の行を書いて MermaidToShapes を実行する。
 ' 配置は「記法」シートの配置方向。上から下は TD、左から右は LR。省略時は TD。
-' 記法とオブジェクト名の対応は「記法」シート。お手本図形は「設定」シート（オブジェクト名で置く）。
+' 記法とオブジェクト名の対応は「記法」シート。お手本図形のシート名は、記法シートの「設定シート」の右のセル。空なら「設定」。
 
 Private Const SETTING_SHEET As String = "設定"
 Private Const NOTATION_SHEET As String = "記法"
 
-' 図形位置はポイント。ここを変えると全体の配置が変わる。
+' 図形位置はポイント。記法シートの配置方向の行が空のときの初期値。
 ' 左から右 (LR)。段は Left 方向、同じ段の並びは Top 方向。
 Private Const LR_ORIGIN_LEFT As Single = 250   ' 最初の段の Left
 Private Const LR_RANK_GAP As Single = 50        ' 段と段のすき間
@@ -21,6 +21,9 @@ Private Const TD_RANK_GAP As Single = 40        ' 段と段のすき間
 Private Const TD_SIBLING_GAP As Single = 30     ' 同じ段の図形のすき間
 Private Const TD_MIN_LEFT As Single = 250       ' Left の下限
 
+Private PlaceTDOrigin As Single, PlaceTDRankGap As Single, PlaceTDSiblingGap As Single, PlaceTDMinCross As Single
+Private PlaceLROrigin As Single, PlaceLRRankGap As Single, PlaceLRSiblingGap As Single, PlaceLRMinCross As Single
+
 Private ShapeRules As Collection   ' 開始 & vbLf & 終了 & vbLf & オブジェクト名。開始が長い順
 Private LineOpList As Collection   ' 矢印の記法。シートの順
 Private LineMap As Object          ' 矢印の記法 -> オブジェクト名
@@ -30,20 +33,21 @@ Private DefaultShape As String     ' 括弧のない ID に使うオブジェクト名
 
 Sub MermaidToShapes()
     Dim ws As Worksheet: Set ws = ActiveSheet
-    Dim noteErr As String
+    Dim noteErr As String, cfgName As String
     If Not SheetExists(NOTATION_SHEET) Then
         MsgBox "「記法」シートがありません。", vbExclamation
         Exit Sub
     End If
-    If Not SheetExists(SETTING_SHEET) Then
-        MsgBox "「設定」シートがありません。", vbExclamation
+    cfgName = SettingSheetName()
+    If Not SheetExists(cfgName) Then
+        MsgBox "設定シート「" & cfgName & "」がありません。" & vbCrLf & "「記法」シートの「設定シート」の右のセルを確認してください。", vbExclamation
         Exit Sub
     End If
     If Not LoadNotation(noteErr) Then
         MsgBox noteErr, vbExclamation
         Exit Sub
     End If
-    Dim cfg As Worksheet: Set cfg = Worksheets(SETTING_SHEET)
+    Dim cfg As Worksheet: Set cfg = Worksheets(cfgName)
     Dim nodes As Object: Set nodes = CreateObject("Scripting.Dictionary")  ' id -> 表示文字
     Dim kinds As Object: Set kinds = CreateObject("Scripting.Dictionary")  ' id -> オブジェクト名
     Dim level As Object: Set level = CreateObject("Scripting.Dictionary")
@@ -110,7 +114,7 @@ Sub MermaidToShapes()
         If FindTemplate(cfg, CStr(k)) Is Nothing Then miss = miss & CStr(k) & vbCrLf
     Next
     If miss <> "" Then
-        MsgBox "設定シートに、次の名前のお手本図形がありません。" & vbCrLf & vbCrLf & miss, vbExclamation
+        MsgBox "シート「" & cfg.Name & "」に、次の名前のお手本図形がありません。" & vbCrLf & vbCrLf & miss, vbExclamation
         Exit Sub
     End If
 
@@ -192,9 +196,9 @@ Private Sub PlaceNodes(shp As Object, level As Object, edges As Collection, ByVa
 
     Dim mainAt As Single, mainGap As Single, crossGap As Single, minCross As Single
     If flow = "LR" Then
-        mainAt = LR_ORIGIN_LEFT: mainGap = LR_RANK_GAP: crossGap = LR_SIBLING_GAP: minCross = LR_MIN_TOP
+        mainAt = PlaceLROrigin: mainGap = PlaceLRRankGap: crossGap = PlaceLRSiblingGap: minCross = PlaceLRMinCross
     Else
-        mainAt = TD_ORIGIN_TOP: mainGap = TD_RANK_GAP: crossGap = TD_SIBLING_GAP: minCross = TD_MIN_LEFT
+        mainAt = PlaceTDOrigin: mainGap = PlaceTDRankGap: crossGap = PlaceTDSiblingGap: minCross = PlaceTDMinCross
     End If
 
     Dim ids As Collection, sh As Shape
@@ -671,6 +675,23 @@ Private Function NodeText(ByVal s As String, ByVal startAt As Long, ByVal closer
     If q > 0 Then NodeText = Trim(Mid(s, startAt, q - startAt)) Else NodeText = Trim(Mid(s, startAt))
 End Function
 
+' 記法シートで見出し「設定シート」の右（空なら下）に書いたシート名。空なら「設定」
+Private Function SettingSheetName() As String
+    Dim ws As Worksheet, r As Long, c As Long, name As String
+    Set ws = Worksheets(NOTATION_SHEET)
+    SettingSheetName = SETTING_SHEET
+    For r = 1 To 15
+        For c = 1 To 30
+            If CellText(ws, r, c) = "設定シート" Then
+                name = CellText(ws, r, c + 1)
+                If name = "" Then name = CellText(ws, r + 1, c)
+                If name <> "" Then SettingSheetName = name
+                Exit Function
+            End If
+        Next
+    Next
+End Function
+
 Private Function SheetExists(ByVal name As String) As Boolean
     Dim ws As Worksheet
     For Each ws In Worksheets
@@ -682,6 +703,28 @@ Private Function CellText(ws As Worksheet, ByVal row As Long, ByVal col As Long)
     CellText = Trim(CStr(ws.Cells(row, col).Value & ""))
 End Function
 
+Private Function HeaderCol(ws As Worksheet, ByVal row As Long, ByVal title As String) As Long
+    Dim c As Long
+    For c = 1 To 30
+        If CellText(ws, row, c) = title Then HeaderCol = c: Exit Function
+    Next
+End Function
+
+' 空欄は value を変えず初期値のまま。数値でなければエラー
+Private Function ApplyPlace(ws As Worksheet, ByVal row As Long, ByVal col As Long, ByRef value As Single, ByRef errMsg As String) As Boolean
+    Dim v As String
+    ApplyPlace = True
+    If col < 1 Then Exit Function
+    v = CellText(ws, row, col)
+    If v = "" Then Exit Function
+    If Not IsNumeric(v) Then
+        errMsg = "「記法」シートの " & row & " 行目の配置は数値にしてください。（" & v & "）"
+        ApplyPlace = False
+        Exit Function
+    End If
+    value = CSng(v)
+End Function
+
 ' 「記法」シートから、図形の開始・終了と線の記法を読む
 Private Function LoadNotation(ByRef errMsg As String) As Boolean
     Dim ws As Worksheet
@@ -689,6 +732,7 @@ Private Function LoadNotation(ByRef errMsg As String) As Boolean
     Dim openCol As Long, closeCol As Long, shapeNameCol As Long, figCol As Long
     Dim lineOpCol As Long, lineNameCol As Long
     Dim dirMeanCol As Long, dirNoteCol As Long, metaCol As Long
+    Dim originCol As Long, rankCol As Long, sibCol As Long, minCol As Long
     Dim foundOpen As Long, foundFig As Long, foundLineOp As Long, foundDir As Long, foundMeta As Long
     Dim op As String, cl As String, fig As String, nm As String, lay As String
 
@@ -699,6 +743,8 @@ Private Function LoadNotation(ByRef errMsg As String) As Boolean
     Set DirectionMap = CreateObject("Scripting.Dictionary")
     Set ShapeNameMap = CreateObject("Scripting.Dictionary")
     DefaultShape = ""
+    PlaceTDOrigin = TD_ORIGIN_TOP: PlaceTDRankGap = TD_RANK_GAP: PlaceTDSiblingGap = TD_SIBLING_GAP: PlaceTDMinCross = TD_MIN_LEFT
+    PlaceLROrigin = LR_ORIGIN_LEFT: PlaceLRRankGap = LR_RANK_GAP: PlaceLRSiblingGap = LR_SIBLING_GAP: PlaceLRMinCross = LR_MIN_TOP
 
     For headerRow = 1 To 15
         foundOpen = 0: foundFig = 0: foundLineOp = 0: foundDir = 0: foundMeta = 0
@@ -726,6 +772,10 @@ Private Function LoadNotation(ByRef errMsg As String) As Boolean
             dirMeanCol = foundDir
             dirNoteCol = foundDir + 1
             metaCol = foundMeta
+            originCol = HeaderCol(ws, headerRow, "開始位置")
+            rankCol = HeaderCol(ws, headerRow, "段の間隔")
+            sibCol = HeaderCol(ws, headerRow, "並びの間隔")
+            minCol = HeaderCol(ws, headerRow, "下限")
             Exit For
         End If
     Next
@@ -796,6 +846,17 @@ Private Function LoadNotation(ByRef errMsg As String) As Boolean
                     Exit Function
                 End If
                 DirectionMap(op) = lay
+                If lay = "TD" Then
+                    If Not ApplyPlace(ws, r, originCol, PlaceTDOrigin, errMsg) Then Exit Function
+                    If Not ApplyPlace(ws, r, rankCol, PlaceTDRankGap, errMsg) Then Exit Function
+                    If Not ApplyPlace(ws, r, sibCol, PlaceTDSiblingGap, errMsg) Then Exit Function
+                    If Not ApplyPlace(ws, r, minCol, PlaceTDMinCross, errMsg) Then Exit Function
+                Else
+                    If Not ApplyPlace(ws, r, originCol, PlaceLROrigin, errMsg) Then Exit Function
+                    If Not ApplyPlace(ws, r, rankCol, PlaceLRRankGap, errMsg) Then Exit Function
+                    If Not ApplyPlace(ws, r, sibCol, PlaceLRSiblingGap, errMsg) Then Exit Function
+                    If Not ApplyPlace(ws, r, minCol, PlaceLRMinCross, errMsg) Then Exit Function
+                End If
             End If
         Next
     End If
